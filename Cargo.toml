@@ -7,6 +7,7 @@ edition = "2021"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 embedded-hal = {version = "0.2.7", features = ["unproven"]}
+fugit = "0.3"
 rp-pico = "0.5.0"
 rp2040-boot2 = { version = "0.2.1" }
 critical-section = { version = "1.0" }
