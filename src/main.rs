@@ -17,6 +17,7 @@ use bsp::hal::{
     pac,
     pac::interrupt,
     sio::Sio,
+//    timer::{Alarm0, Timer},
     watchdog::Watchdog,
 };
 
@@ -27,18 +28,19 @@ use panic_probe as _;
 use core::cell::RefCell;
 use critical_section::Mutex;
 
-// Types for method to transfer ownership of LED and button pins to interrupt handler
-type LedPin = Pin<Gpio25, PushPullOutput>;
-type ButtonPin = Pin<Gpio16, PullUpInput>;
-type PulsePin = Pin<Gpio18, PushPullOutput>;
-type LedPulseAndButton = (LedPin, PulsePin, ButtonPin);
-
-static GLOBAL_PINS: Mutex<RefCell<Option<LedPulseAndButton>>> = Mutex::new(RefCell::new(None));
+struct InterruptPeripherals {
+    led_pin: Pin<Gpio25, PushPullOutput>,
+    button_pin: Pin<Gpio16, PullUpInput>,
+    pulse_pin: Pin<Gpio18, PushPullOutput>,
+    //alarm: Alarm0,
+}
+static INTERRUPT_PERIPHERALS: Mutex<RefCell<Option<InterruptPeripherals>>> = Mutex::new(RefCell::new(None));
 
 pub struct PicoDevice {
     delay: Delay,
 }
 
+#[allow(clippy::new_without_default)]
 impl PicoDevice {
     pub fn new() -> PicoDevice {
         debug!("Initializing device");
@@ -69,6 +71,9 @@ impl PicoDevice {
             clocks.system_clock.get_freq().to_Hz()
         );
 
+        //let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+        //let alarm = timer.alarm_0().unwrap();
+
         let pins = bsp::Pins::new(
             pac.IO_BANK0,
             pac.PADS_BANK0,
@@ -79,33 +84,37 @@ impl PicoDevice {
         // Init pins
         let led_pin = pins.led.into_push_pull_output();
         let pulse_pin = pins.gpio18.into_push_pull_output();
-        let sw1_pin = pins.gpio16.into_pull_up_input();
+        let button_pin = pins.gpio16.into_pull_up_input();
 
         // Enable interrupt for sw1 pin (won't trigger until bank enabled)
-        sw1_pin.set_interrupt_enabled(EdgeLow, true);
+        button_pin.set_interrupt_enabled(EdgeLow, true);
 
         // Transfer ownership of pins into `GLOBAL_PINS` variable
         // for sole use by the interrupt handler.
+        let interrupt_periphs = InterruptPeripherals{
+            led_pin,
+            button_pin,
+            pulse_pin,
+            //alarm: alarm,
+        };
         critical_section::with(|cs| {
-            GLOBAL_PINS.borrow(cs).replace(
-                Some((led_pin, pulse_pin, sw1_pin))
-            );
+            INTERRUPT_PERIPHERALS.borrow(cs).replace(Some(interrupt_periphs));
         });
 
         // Enable interrupts for IO_IRQ_BANK0
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
+            //pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
         }
 
         PicoDevice {
-            delay: delay,
+            delay,
         }
     }
 
     fn delay_ms(&mut self, ms: u32) {
         self.delay.delay_ms(ms)
     }
-
 }
 
 #[entry]
@@ -121,24 +130,26 @@ fn main() -> ! {
 
 #[interrupt]
 fn IO_IRQ_BANK0() {
-    // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<LedAndButton>`
-    static mut LED_AND_BUTTON: Option<LedPulseAndButton> = None;
+    critical_section::with(|cs| {
+        // Temporarily take peripherals
+        let mut interrupt_periphs = INTERRUPT_PERIPHERALS.borrow(cs).take();
 
-    // This is one-time lazy initialisation. We steal the variables given to us
-    // via `GLOBAL_PINS`.
-    if LED_AND_BUTTON.is_none() {
-        critical_section::with(|cs| {
-            *LED_AND_BUTTON = GLOBAL_PINS.borrow(cs).take();
-        });
-    }
+        if let Some(mut periphs) = interrupt_periphs {
 
-    if let Some(gpios) = LED_AND_BUTTON {
-        let (led, pulse_pin, button) = gpios;
+            if periphs.button_pin.interrupt_status(EdgeLow) {
+                _ = periphs.led_pin.toggle();
+                _ = periphs.pulse_pin.toggle();
+                periphs.button_pin.clear_interrupt(EdgeLow);
+            }
 
-        if button.interrupt_status(EdgeLow) {
-            _ = led.toggle();
-            _ = pulse_pin.toggle();
-            button.clear_interrupt(EdgeLow);
+            interrupt_periphs = Some(periphs);
         }
-    }
+
+        INTERRUPT_PERIPHERALS.borrow(cs).replace_with(|_| interrupt_periphs);
+    });
 }
+
+//#[interrupt]
+//fn TIMER_IRQ_0() {
+//
+//}
