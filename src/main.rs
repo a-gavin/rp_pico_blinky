@@ -63,6 +63,12 @@ impl PicoDevice {
         .ok()
         .unwrap();
 
+        // Init delay struct
+        let delay: Delay = Delay::new(
+            core.SYST, 
+            clocks.system_clock.get_freq().to_Hz()
+        );
+
         let pins = bsp::Pins::new(
             pac.IO_BANK0,
             pac.PADS_BANK0,
@@ -75,7 +81,7 @@ impl PicoDevice {
         let pulse_pin = pins.gpio18.into_push_pull_output();
         let sw1_pin = pins.gpio16.into_pull_up_input();
 
-        // Enable interrupts
+        // Enable interrupt for sw1 pin (won't trigger until bank enabled)
         sw1_pin.set_interrupt_enabled(EdgeLow, true);
 
         // Transfer ownership of pins into `GLOBAL_PINS` variable
@@ -86,13 +92,7 @@ impl PicoDevice {
             );
         });
 
-        // Init delay struct
-        let delay: Delay = Delay::new(
-            core.SYST, 
-            clocks.system_clock.get_freq().to_Hz()
-        );
-
-        // Enable interrupts
+        // Enable interrupts for IO_IRQ_BANK0
         unsafe {
             pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
         }
